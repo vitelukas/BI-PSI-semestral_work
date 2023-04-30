@@ -24,8 +24,8 @@ def main():
     SUFFIX = b'\x07\x08'
 
     # timeouts (s)
-    TIMEOUT = 1.0
-    TIMEOUT_RECHARGING = 5.0
+    TIMEOUT = 1
+    TIMEOUT_RECHARGING = 5
     #? Server constants ----------------------------------------------------- 
 
     #* Key ID pairs; FORMAT =  KEY_ID : (SERVER_KEY, CLIENT_KEY)
@@ -122,41 +122,37 @@ def main():
     
     #! Functions
         #*==========================================---- ↓ GENERAL FUNCTIONS ↓ ----=============================================================
-
+    
     def get_message(robot: client_robot, msg_max_len: str, TIMEOUT: int = TIMEOUT):
-        data = b''
-        # We are receiving data from the client until we receive a message
+        client_message_len = CLIENT_MESSAGES_MAX_LEN[msg_max_len]
+        msg = b''
+        max_message_len = max(client_message_len, CLIENT_MESSAGES_MAX_LEN["CLIENT_RECHARGING"])
+        # We are receiving data from the client until we receive a full message
         while True:
-            # If there is at least one message in the buffer we return it
-            if SUFFIX in robot.buffer:
-                index = robot.buffer.index(SUFFIX) + 2  # Index of the end of the message
-                msg = robot.buffer[:index]
-                # if len(msg) >= CLIENT_MESSAGES_MAX_LEN[msg_max_len]:
-                #     raise SERVER_SYNTAX_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])       
-                robot.buffer = robot.buffer[index:]
-                if msg != CLIENT_RECHARGING_MESSAGES["CLIENT_RECHARGING"]:
-                    if msg == CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"] and robot.recharging == False:
-                        raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_LOGIC_ERROR"])       
-                    else:
-                        return msg
-                else:
-                    robot_recharging(robot)
-                    return get_message(robot, msg_max_len)
-                
-            # If there is no message in the buffer, we wait for a message
-            try:
-                robot.conn.settimeout(TIMEOUT)
-                data = robot.conn.recv(1024)
-                robot.conn.settimeout(None)
-            except socket.timeout:
-                close_client(robot.conn)
-                print(f"[CONNECTION TIMEOUT] closing connection...")        #~ debug print
+            # If there is nothing in the buffer, we wait for a message
+            if len(robot.buffer) == 0:
+                robot.buffer += robot.conn.recv(1024)
+            # If there is at least one byte in the buffer we gradually put it together into a message
+            # if we put together a whole message or if we reach max_message_len then we break the loop
+            else:
+                msg += robot.buffer[:1]
+                robot.buffer = robot.buffer[1:]
+                if msg[-2:] == SUFFIX:
+                    break
+                if len(msg) == max_message_len:
+                    break
 
-            robot.buffer += data
+        robot.conn.settimeout(TIMEOUT)
+        if msg != CLIENT_RECHARGING_MESSAGES["CLIENT_RECHARGING"]:
+            if msg == CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"] and robot.recharging == False:
+                raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_LOGIC_ERROR"])       
+            else:
+                return msg
+        else:
+            robot_recharging(robot)
+            return get_message(robot, msg_max_len)
 
-
-        #*========================================---- ↓ AUTHENTICATION FUNCTIONS ↓ ----=========================================================
-
+    
     def authenticate_client(robot: client_robot, client_username: bytes):
         print(f"Starting username validation...")                           #~ debug print
         validate_client_message(client_username, "CLIENT_USERNAME")
@@ -456,7 +452,12 @@ def main():
 
         robot = client_robot(conn)
         while robot.connected:                                  # while client is connected receive messages from him
-            msg = get_message(robot, "CLIENT_USERNAME")         # wait for the client until he sends a message through the socket (load it into a buffer which is 1024 bytes big)
+            try:
+                print("[GETTING USERNAME]")                     #~ debug print
+                msg = get_message(robot, "CLIENT_USERNAME")     # wait for the client until he sends a message through the socket (load it into a buffer which is 1024 bytes big)
+            except SERVER_SYNTAX_ERROR:                         #? clients key ID or confirmation key is not a num
+                print("[SYTNAX ERROR RAISED]")                  #~ debug print
+                comm_failure(robot, "SERVER_SYNTAX_ERROR")  
             if len(msg) > 2:                                    # check if we actually got a valid message
 
                 if not robot.authenticated:
