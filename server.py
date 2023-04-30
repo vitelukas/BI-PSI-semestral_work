@@ -123,7 +123,7 @@ def main():
     #! Functions
         #*==========================================---- ↓ GENERAL FUNCTIONS ↓ ----=============================================================
 
-    def get_message(robot: client_robot, TIMEOUT: int = TIMEOUT):
+    def get_message(robot: client_robot, msg_max_len: str, TIMEOUT: int = TIMEOUT):
         data = b''
         # We are receiving data from the client until we receive a message
         while True:
@@ -131,15 +131,17 @@ def main():
             if SUFFIX in robot.buffer:
                 index = robot.buffer.index(SUFFIX) + 2  # Index of the end of the message
                 msg = robot.buffer[:index]
+                # if len(msg) >= CLIENT_MESSAGES_MAX_LEN[msg_max_len]:
+                #     raise SERVER_SYNTAX_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])       
                 robot.buffer = robot.buffer[index:]
                 if msg != CLIENT_RECHARGING_MESSAGES["CLIENT_RECHARGING"]:
                     if msg == CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"] and robot.recharging == False:
-                        raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])       
+                        raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_LOGIC_ERROR"])       
                     else:
                         return msg
                 else:
                     robot_recharging(robot)
-                    return get_message(robot)
+                    return get_message(robot, msg_max_len)
                 
             # If there is no message in the buffer, we wait for a message
             try:
@@ -166,7 +168,7 @@ def main():
         # if the clients username is valid, send him a key request
         robot.conn.send(SERVER_MESSAGES["SERVER_KEY_REQUEST"])
 
-        client_KEY_ID = get_message(robot)                                             
+        client_KEY_ID = get_message(robot, "CLIENT_KEY_ID")                                             
 
         check_key_ID(client_KEY_ID)
 
@@ -176,7 +178,7 @@ def main():
         #? send SERVER_CONFIRMATION (= server_confirmation_key ) to the client
         robot.conn.send( str(server_confirmation_key).encode(FORMAT) + SUFFIX)
 
-        client_confirmation_key = get_message(robot)
+        client_confirmation_key = get_message(robot, "CLIENT_CONFIRMATION")
         try:
             check_client_confirmation_key(client_confirmation_key, client_key, hash_value)
             #? if the client_confirmation_key is correct, send SERVER_OK to the client
@@ -274,7 +276,7 @@ def main():
 
         # robot is now in the final position -> we pick up the message
         robot.conn.send(SERVER_MESSAGES["SERVER_PICK_UP"])
-        msg = get_message(robot)
+        msg = get_message(robot, "CLIENT_MESSAGE")
         validate_client_message(msg, "CLIENT_MESSAGE")
 
 
@@ -326,7 +328,7 @@ def main():
     def get_coords_from_message(robot: client_robot, turn: int = 0):    #? turn = 0 = robot moved 
         robot.old_position = robot.position                             #? turn = 1 = robot turned left
                                                                         #? turn = 2 = robot turned right
-        coords = get_message(robot)
+        coords = get_message(robot, "CLIENT_OK")
         validate_client_message(coords, "CLIENT_OK")
 
         coords = coords[:-2].decode(FORMAT)
@@ -410,7 +412,7 @@ def main():
     def robot_recharging(robot: client_robot):
         robot.conn.settimeout(TIMEOUT_RECHARGING)
         robot.recharging = True
-        message = get_message(robot, TIMEOUT_RECHARGING)
+        message = get_message(robot, "CLIENT_FULL_POWER", TIMEOUT_RECHARGING)
         validate_client_message(message, "CLIENT_FULL_POWER")
         if message != CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"]:
             raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_LOGIC_ERROR"])
@@ -426,7 +428,7 @@ def main():
             msg = robot.buffer[:index]
             if msg != CLIENT_RECHARGING_MESSAGES["CLIENT_RECHARGING"]:
                 if msg == CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"] and robot.recharging == False:
-                    raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])       
+                    raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_LOGIC_ERROR"])       
             else:
                 print("[STARTING ROBOT RECHARGING]")
                 robot.buffer = robot.buffer[index:]
@@ -454,7 +456,7 @@ def main():
 
         robot = client_robot(conn)
         while robot.connected:                                  # while client is connected receive messages from him
-            msg = get_message(robot)                            # wait for the client until he sends a message through the socket (load it into a buffer which is 1024 bytes big)
+            msg = get_message(robot, "CLIENT_USERNAME")         # wait for the client until he sends a message through the socket (load it into a buffer which is 1024 bytes big)
             if len(msg) > 2:                                    # check if we actually got a valid message
 
                 if not robot.authenticated:
@@ -463,6 +465,7 @@ def main():
                     except SERVER_KEY_OUT_OF_RANGE_ERROR:       #? clients key ID is out of range
                         comm_failure(robot, "SERVER_KEY_OUT_OF_RANGE_ERROR")
                     except SERVER_SYNTAX_ERROR:                 #? clients key ID or confirmation key is not a num
+                        print("[SYTNAX ERROR RAISED]")
                         comm_failure(robot, "SERVER_SYNTAX_ERROR")
                     finally:
                         if not robot.authenticated:
