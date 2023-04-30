@@ -25,7 +25,7 @@ def main():
 
     # timeouts (s)
     TIMEOUT = 1.0
-    RECHARGING_TIMEOUT = 5.0
+    TIMEOUT_RECHARGING = 5.0
     #? Server constants ----------------------------------------------------- 
 
     #* Key ID pairs; FORMAT =  KEY_ID : (SERVER_KEY, CLIENT_KEY)
@@ -98,7 +98,7 @@ def main():
 
 
     #? cann happen only while clients robot is recharging  
-    class LOGIC_ERROR(Exception):
+    class SERVER_LOGIC_ERROR(Exception):
         def __init__(self, message):
             self.message = message
 
@@ -132,14 +132,16 @@ def main():
                 index = robot.buffer.index(SUFFIX) + 2  # Index of the end of the message
                 msg = robot.buffer[:index]
                 robot.buffer = robot.buffer[index:]
-                if msg != CLIENT_RECHARGING_MESSAGES["CLIENT_RECHARGING"]:      
-                    return msg
+                if msg != CLIENT_RECHARGING_MESSAGES["CLIENT_RECHARGING"]:
+                    if msg == CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"] and robot.recharging == False:
+                        raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])       
+                    else:
+                        return msg
                 else:
-                    robot.recharging = True                                     #TODO implement robot recharging situation
                     robot_recharging(robot)
+                    return get_message(robot)
                 
             # If there is no message in the buffer, we wait for a message
-            #TODO - implement timeout
             try:
                 robot.conn.settimeout(TIMEOUT)
                 data = robot.conn.recv(1024)
@@ -156,18 +158,10 @@ def main():
             robot.buffer += data
 
 
-        #*==========================================---- ↓ ROBOT  RECHARGING ↓ ----=============================================================
-
-    # TODO - IMPLEMENT RECHARGING
-    def robot_recharging(robot: client_robot):
-        pass
-
-
         #*========================================---- ↓ AUTHENTICATION FUNCTIONS ↓ ----=========================================================
+    
     def check_suffix(message: bytes):
         if message[-2:] != SUFFIX:
-            sfx = message[-2:]
-            print(f"Wrong message suffix! Your message suffix was: {sfx}")              #~ debug print
             raise SERVER_SYNTAX_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
 
 
@@ -263,8 +257,7 @@ def main():
 
         #*========================================---- ↓ ROBOT NAVIGATION FUNCTIONS ↓ ----=====================================================
     
-    # TODO - vyresit zacykleni TURN RIGHT - when the coords are the same he is trying to dodge
-    def navigate_robot(robot: client_robot):                                                 #! CONTINUE HERE <================
+    def navigate_robot(robot: client_robot):                                                 
         print(f"STARTING TO NAVIGATE ROBOT!")      #~ debug print
         get_start_position(robot)
 
@@ -400,7 +393,7 @@ def main():
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
         get_coords_from_message(robot)
-        if robot.position[0] == 0 or robot.position[1] == 0:
+        if robot.position[0] == 0 or robot.position[1] == 0:    #? if the robot crosses an axis while dodging an obstacle we can stop dodging
             return None
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
@@ -416,6 +409,19 @@ def main():
         get_coords_from_message(robot, 2)
 
 
+         #*==========================================---- ↓ ROBOT  RECHARGING ↓ ----=============================================================
+
+    # TODO - IMPLEMENT RECHARGING                                               #! CONTINUE HERE <================
+    def robot_recharging(robot: client_robot):
+        robot.conn.settimeout(TIMEOUT_RECHARGING)
+        robot.recharging = True
+        message = get_message(robot)
+        validate_client_message(message, "CLIENT_FULL_POWER")
+        if message != CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"]:
+            raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_LOGIC_ERROR"])
+        robot.recharging = False
+        robot.conn.settimeout(None)
+
     #|=================================================================================================================================================================
     
     #! CLIENTS HANDLING FUNCTIONS
@@ -423,6 +429,12 @@ def main():
     def close_client(conn):
         conn.close()
 
+
+    def comm_failure(robot, error_type: str):
+        print(error_type)
+        robot.conn.send(SERVER_MESSAGES[error_type])
+        close_client(robot.conn)
+        
 
     # handle individual clients separately
     # running for each client individually
@@ -433,42 +445,36 @@ def main():
         while robot.connected:                                  # while client is connected receive messages from him
             msg = get_message(robot)                            # wait for the client until he sends a message through the socket (load it into a buffer which is 1024 bytes big)
             if len(msg) > 2:                                    # check if we actually got a valid message
-                if msg[:-2].decode(FORMAT) == "!bye":           #~ DELETE
-                    robot.connected = False                     #~ DELETE
 
                 if not robot.authenticated:
                     try:
                         robot.authenticated = authenticate_client(robot, msg)
-                    except SERVER_KEY_OUT_OF_RANGE_ERROR as err:    #? clients key ID is out of range
-                        print(err)
-                        conn.send(SERVER_MESSAGES["SERVER_KEY_OUT_OF_RANGE_ERROR"])
-                        close_client(robot.conn)
-                    except SERVER_SYNTAX_ERROR as err:              #? clients key ID or confirmation key is not a num
-                        print(err)
-                        conn.send(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
-                        close_client(robot.conn)
-                    else:
-                        pass
+                    except SERVER_KEY_OUT_OF_RANGE_ERROR:       #? clients key ID is out of range
+                        comm_failure(robot, "SERVER_KEY_OUT_OF_RANGE_ERROR")
+                    except SERVER_SYNTAX_ERROR:                 #? clients key ID or confirmation key is not a num
+                        comm_failure(robot, "SERVER_SYNTAX_ERROR")
                     finally:
                         if not robot.authenticated:
                             close_client(robot.conn)
+
+                print(f"[{addr}] AUTHENTICATION IS OKEY!")      #~ debug print
+
                 try:
-                    print(f"[{addr}] AUTHENTICATION IS OKEY!")      #~ debug print
                     navigate_robot(robot)
-                except SERVER_SYNTAX_ERROR as err:              #? clients key ID or confirmation key is not a num
-                    print(err)
-                    conn.send(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
-                    close_client(robot.conn)
+                except SERVER_SYNTAX_ERROR:                     #? clients key ID or confirmation key is not a num
+                    comm_failure(robot, "SERVER_SYNTAX_ERROR")
+                except SERVER_LOGIC_ERROR:
+                    comm_failure(robot, "SERVER_LOGIC_ERROR")
 
                 #? if the navigation was successful, send SERVER_LOGOUT to the client
                 conn.send(SERVER_MESSAGES["SERVER_LOGOUT"])
                 robot.connected = False
 
         print(f"{addr} diconnected.")                           #~ debug print
-        
-        # when client writes "!bye" close the connection with the client
-        close_client(robot.conn) 
-    
+
+        #? if the robot picked up the message successfully, we close the connection
+        close_client(robot.conn)
+
 
     #? handle new connections and distribute them between clients 
     def start():
