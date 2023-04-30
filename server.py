@@ -71,6 +71,13 @@ def main():
         "DOWN":     "LEFT",
         "NONE":     "NONE"
     }
+    DIRECTIONS_TURN_LEFT = {
+        "UP":       "LEFT",
+        "LEFT":     "DOWN",
+        "DOWN":     "RIGHT",
+        "RIGHT":    "UP",
+        "NONE":     "NONE"
+    }
 
     #|=================================================================================================================================================================
 
@@ -261,19 +268,20 @@ def main():
         print(f"STARTING TO NAVIGATE ROBOT!")      #~ debug print
         get_start_position(robot)
 
-        #? firstly we get the robot to the position y = 0 
-        # we align robot so that he is facing towards the y axis        
-        align_robot(robot, 1)
-        while robot.position[1] != 0:
-            robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
-            get_coords_from_message(robot)
+        while robot.position != (0,0):
+            #? firstly we get the robot to the position y = 0 
+            # we align robot so that he is facing towards the y axis        
+            align_robot(robot, 1)
+            while robot.position[1] != 0:
+                robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
+                get_coords_from_message(robot)
 
-        #? now the robot is on position y = 0 so we need him to get to the position x = 0 
-        # we align robot so that he is facing towards the x axis
-        align_robot(robot, 0)
-        while robot.position[0] != 0:
-            robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
-            get_coords_from_message(robot)            
+            #? now the robot is on position y = 0 so we need him to get to the position x = 0 
+            # we align robot so that he is facing towards the x axis
+            align_robot(robot, 0)
+            while robot.position[0] != 0:
+                robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
+                get_coords_from_message(robot)            
 
         # robot is now in the final position -> we pick up the message
         robot.conn.send(SERVER_MESSAGES["SERVER_PICK_UP"])
@@ -300,9 +308,7 @@ def main():
 
     def align_turn_robot(robot: client_robot):
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
-        robot.direction = DIRECTIONS_TURN_RIGHT[robot.direction] 
+        get_coords_from_message(robot, 2)
 
 
     def get_start_position(robot: client_robot):
@@ -319,17 +325,23 @@ def main():
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
         get_coords_from_message(robot)
 
+        #? try to move the robot until we have his position and direction
+        while robot.direction == "NONE":
+            robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
+            get_coords_from_message(robot, 2)
+            robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
+            get_coords_from_message(robot)
+        
 
     #? get the new robot coordinates and direction from the message, set the robot's position and and old_position
-    def get_coords_from_message(robot: client_robot, turn: int = 0):
-        robot.old_position = robot.position
-
+    def get_coords_from_message(robot: client_robot, turn: int = 0):    #? turn = 0 = robot moved 
+        robot.old_position = robot.position                             #? turn = 1 = robot turned left
+                                                                        #? turn = 2 = robot turned right
         coords = get_message(robot)
         validate_client_message(coords, "CLIENT_OK")
 
         coords = coords[:-2].decode(FORMAT)
 
-        #TODO - simplify
         if ( len(coords.split()) != 3 ) or ( len(coords) != len(coords.rstrip()) ):
             raise SERVER_SYNTAX_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
 
@@ -341,14 +353,26 @@ def main():
 
         # Convert the coordinates to integers and update the robot's position
         robot.position = (int(x), int(y))
-        get_robot_direction(robot)                              #~ PRESUNOUT JENOM DO get_start_position ???
-        print(f"NEW POSITION: {robot.position}")                #~ debug print
-        print(f"NEW DIRECTION: {robot.direction}")              #~ debug print
 
-        if (robot.position == robot.old_position) and (turn == 0):
+        #? do NOT try to dodge an obstacle if:
+        #?  1) we are only getting the starting position
+        #?  2) the robot hits an obstacle right after he spawns
+        #?  3) the robot only turned right/left but didn't actually move
+        if (robot.position == robot.old_position) and (turn == 0) and (robot.direction != "NONE"):
             #? robot hit an obstacle
             robot_dodge(robot)
 
+        if turn == 0:
+            get_robot_direction(robot)
+        elif turn == 1:
+            robot.direction = DIRECTIONS_TURN_LEFT[robot.direction]
+        elif turn == 2:
+            robot.direction = DIRECTIONS_TURN_RIGHT[robot.direction]
+
+        print(f"NEW POSITION: {robot.position}")                #~ debug print
+        print(f"NEW DIRECTION: {robot.direction}")              #~ debug print
+
+        
 
     def get_robot_direction(robot: client_robot):
         dx = robot.position[0] - robot.old_position[0]
@@ -361,14 +385,12 @@ def main():
         elif dy > 0:
             robot.direction = "UP"
         elif dy < 0:
-            robot.direction = "DOWN"         
-        # else:
-        #     robot.direction = robot_turn(robot)
+            robot.direction = "DOWN"
 
 
     def robot_dodge(robot: client_robot):
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
-        get_coords_from_message(robot, 1)
+        get_coords_from_message(robot, 2)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
         get_coords_from_message(robot)
@@ -391,7 +413,7 @@ def main():
         get_coords_from_message(robot)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
-        get_coords_from_message(robot, 1)
+        get_coords_from_message(robot, 2)
 
 
     #|=================================================================================================================================================================
