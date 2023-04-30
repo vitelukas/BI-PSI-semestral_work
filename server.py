@@ -124,7 +124,8 @@ def main():
         #*==========================================---- ↓ GENERAL FUNCTIONS ↓ ----=============================================================
 
     # TODO - OPTIMIZE - add timeout                     <<<=======================
-    def get_message(robot: client_robot):
+    def get_message(robot: client_robot, TIMEOUT: int = TIMEOUT):
+        data = b''
         # We are receiving data from the client until we receive a message
         while True:
             # If there is at least one message in the buffer we return it
@@ -150,15 +151,52 @@ def main():
                 close_client(robot.conn)
                 print(f"[CONNECTION TIMEOUT] closing connection...")                    #~ debug print
 
-            if not data:                                                                #~ ? DELETE ?
-                # If there is no data in the buffer, we return None because the connection has been closed
-                print(f"[Connection closed]...")                                        #~ debug print
-                close_client(robot.conn)
-                return None
+            # if not data:                                                                #~ ? DELETE ?
+            #     # If there is no data in the buffer, we return None because the connection has been closed
+            #     print(f"[Connection closed]...")                                        #~ debug print
+            #     close_client(robot.conn)
+            #     return None
             robot.buffer += data
 
 
         #*========================================---- ↓ AUTHENTICATION FUNCTIONS ↓ ----=========================================================
+
+    def authenticate_client(robot: client_robot, client_username: bytes):
+        print(f"Starting username validation...")                           #~ debug print
+        validate_client_message(client_username, "CLIENT_USERNAME")
+        robot.username = client_username[:-2].decode(FORMAT)                #? if the client_username is valid, set it to the robot's username
+        robot.username = robot.username.strip()
+
+        check_recharge(robot)
+
+        # if the clients username is valid, send him a key request
+        robot.conn.send(SERVER_MESSAGES["SERVER_KEY_REQUEST"])
+
+        client_KEY_ID = get_message(robot)                                  #! ??? WHAT IF THERE IS A DIFFERENT MESSAGE IN THE BUFFER THAN client_KEY_ID ???                                               
+
+        check_key_ID(client_KEY_ID)
+
+        server_key, client_key = SERVER_CLIENT_KEYS[int(client_KEY_ID[:-2].decode(FORMAT))]
+        server_confirmation_key, hash_value = calculate_confirmation_key(robot.username, server_key)        
+
+        #? send SERVER_CONFIRMATION (= server_confirmation_key ) to the client
+        robot.conn.send( str(server_confirmation_key).encode(FORMAT) + SUFFIX)
+
+        client_confirmation_key = get_message(robot)                        #! WHAT IF THERE ARE ALREADY MORE MESSAGES IN THE BUFFER                                                 
+                                                                            #! AND I GET A MESSAGE THAT IS NOT THE client_confirmation_key FROM THE BUFFER ???
+        try:
+            check_client_confirmation_key(client_confirmation_key, client_key, hash_value)
+            #? if the client_confirmation_key is correct, send SERVER_OK to the client
+            robot.conn.send(SERVER_MESSAGES["SERVER_OK"])
+        except SERVER_LOGIN_FAILED:
+            robot.conn.send(SERVER_MESSAGES["SERVER_LOGIN_FAILED"])
+            return False
+        except SERVER_SYNTAX_ERROR:
+            robot.conn.send(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
+            return False
+
+        return True     #? return true if the whole authentication runs correctly
+        
     
     def check_suffix(message: bytes):
         if message[-2:] != SUFFIX:
@@ -218,41 +256,6 @@ def main():
         key_ID = int(key_ID)
         if key_ID < 0 or key_ID > 4:
             raise SERVER_KEY_OUT_OF_RANGE_ERROR(SERVER_MESSAGES["SERVER_KEY_OUT_OF_RANGE_ERROR"])    
-
-        # ###################################---- MAIN AUTHENTICATION FUNCTION ----###################################
-    def authenticate_client(robot: client_robot, client_username: bytes):
-        print(f"Starting username validation...")                           #~ debug print
-        validate_client_message(client_username, "CLIENT_USERNAME")
-        robot.username = client_username[:-2].decode(FORMAT)                #? if the client_username is valid, set it to the robot's username
-        robot.username = robot.username.strip()
-
-        # if the clients username is valid, send him a key request
-        robot.conn.send(SERVER_MESSAGES["SERVER_KEY_REQUEST"])
-
-        client_KEY_ID = get_message(robot)                                  #! ??? WHAT IF THERE IS A DIFFERENT MESSAGE IN THE BUFFER THAN client_KEY_ID ???                                               
-
-        check_key_ID(client_KEY_ID)
-
-        server_key, client_key = SERVER_CLIENT_KEYS[int(client_KEY_ID[:-2].decode(FORMAT))]
-        server_confirmation_key, hash_value = calculate_confirmation_key(robot.username, server_key)        
-
-        #? send SERVER_CONFIRMATION (= server_confirmation_key ) to the client
-        robot.conn.send( str(server_confirmation_key).encode(FORMAT) + SUFFIX)
-
-        client_confirmation_key = get_message(robot)                        #! WHAT IF THERE ARE ALREADY MORE MESSAGES IN THE BUFFER                                                 
-                                                                            #! AND I GET A MESSAGE THAT IS NOT THE client_confirmation_key FROM THE BUFFER ???
-        try:
-            check_client_confirmation_key(client_confirmation_key, client_key, hash_value)
-            #? if the client_confirmation_key is correct, send SERVER_OK to the client
-            robot.conn.send(SERVER_MESSAGES["SERVER_OK"])
-        except SERVER_LOGIN_FAILED:
-            robot.conn.send(SERVER_MESSAGES["SERVER_LOGIN_FAILED"])
-            return False
-        except SERVER_SYNTAX_ERROR:
-            robot.conn.send(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
-            return False
-
-        return True     #? return true if the whole authentication runs correctly
     
 
         #*========================================---- ↓ ROBOT NAVIGATION FUNCTIONS ↓ ----=====================================================
@@ -415,12 +418,28 @@ def main():
     def robot_recharging(robot: client_robot):
         robot.conn.settimeout(TIMEOUT_RECHARGING)
         robot.recharging = True
-        message = get_message(robot)
+        message = get_message(robot, TIMEOUT_RECHARGING)
         validate_client_message(message, "CLIENT_FULL_POWER")
         if message != CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"]:
             raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_LOGIC_ERROR"])
         robot.recharging = False
         robot.conn.settimeout(None)
+
+    
+    def check_recharge(robot: client_robot):
+        print("ROBOT BUFFER IS CURRENTLY THIS:")
+        print(robot.buffer)
+        if SUFFIX in robot.buffer:
+            index = robot.buffer.index(SUFFIX) + 2
+            msg = robot.buffer[:index]
+            if msg != CLIENT_RECHARGING_MESSAGES["CLIENT_RECHARGING"]:
+                if msg == CLIENT_RECHARGING_MESSAGES["CLIENT_FULL_POWER"] and robot.recharging == False:
+                    raise SERVER_LOGIC_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])       
+            else:
+                print("[STARTING ROBOT RECHARGING]")
+                robot.buffer = robot.buffer[index:]
+                robot_recharging(robot)
+                
 
     #|=================================================================================================================================================================
     
@@ -434,7 +453,7 @@ def main():
         print(error_type)
         robot.conn.send(SERVER_MESSAGES[error_type])
         close_client(robot.conn)
-        
+
 
     # handle individual clients separately
     # running for each client individually
