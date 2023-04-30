@@ -107,7 +107,7 @@ def main():
             self.username: str = ""
             self.buffer: bytes = b''
             self.recharging: bool = False
-            self.direction: str = ""
+            self.direction: str = "NONE"
             self.position: tuple[int, int] = (0, 0)         # (x, y) coordinates
             self.old_position: tuple[int, int] = (0, 0)     # (x, y) coordinates
 
@@ -133,7 +133,14 @@ def main():
                 
             # If there is no message in the buffer, we wait for a message
             #TODO - implement timeout
-            data = robot.conn.recv(1024)
+            try:
+                robot.conn.settimeout(TIMEOUT)
+                data = robot.conn.recv(1024)
+                robot.conn.settimeout(None)
+            except socket.timeout:
+                close_client(robot.conn)
+                print(f"[CONNECTION TIMEOUT] closing connection...")                    #~ debug print
+
             if not data:                                                                #~ ? DELETE ?
                 # If there is no data in the buffer, we return None because the connection has been closed
                 print(f"[Connection closed]...")                                        #~ debug print
@@ -165,9 +172,9 @@ def main():
 
     def validate_client_message(message: bytes, message_type: str):
         check_message_length(message, message_type)
-        print(f"[Client message lenght is OK]")                                         #~ debug print
+        # print(f"[Client message lenght is OK]")                                         #~ debug print
         check_suffix(message)
-        print(f"[Client message suffix is OK]")                                         #~ debug print
+        # print(f"[Client message suffix is OK]")                                         #~ debug print
 
 
     def check_client_confirmation_key(message: bytes, client_key: int, hash_value: int):
@@ -249,21 +256,14 @@ def main():
 
         #*========================================---- ↓ ROBOT NAVIGATION FUNCTIONS ↓ ----=====================================================
     
-    # TODO - vyresit zacykleni TURN RIGHT
+    # TODO - vyresit zacykleni TURN RIGHT - when the coords are the same he is trying to dodge
     def navigate_robot(robot: client_robot):                                                 #! CONTINUE HERE <================
         print(f"STARTING TO NAVIGATE ROBOT!")      #~ debug print
         get_start_position(robot)
 
-        if robot.position == (0,0):
-            robot.conn.send(SERVER_MESSAGES["SERVER_PICK_UP"])
-            msg = get_message(robot)
-            validate_client_message(msg, "CLIENT_MESSAGE")
-            return None
-
         #? firstly we get the robot to the position y = 0 
-        # we align robot so that he is facing towards the y axis
+        # we align robot so that he is facing towards the y axis        
         align_robot(robot, 1)
-        
         while robot.position[1] != 0:
             robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
             get_coords_from_message(robot)
@@ -271,7 +271,6 @@ def main():
         #? now the robot is on position y = 0 so we need him to get to the position x = 0 
         # we align robot so that he is facing towards the x axis
         align_robot(robot, 0)
-        
         while robot.position[0] != 0:
             robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
             get_coords_from_message(robot)            
@@ -282,7 +281,7 @@ def main():
         validate_client_message(msg, "CLIENT_MESSAGE")
 
 
-    def align_robot(robot: client_robot, axis: int):   #? axis = 0 means X ...
+    def align_robot(robot: client_robot, axis: int):   #? axis = 1 means Y ...
         if axis == 1:
             if robot.position[1] < 0:
                 while robot.direction != "UP":
@@ -303,19 +302,14 @@ def main():
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
         msg = get_message(robot)
         validate_client_message(msg, "CLIENT_OK")
-        robot_turn(robot)
-
-
-    def robot_turn(robot: client_robot):
-        old_direction = robot.direction
-        robot.direction = DIRECTIONS_TURN_RIGHT[old_direction] 
+        robot.direction = DIRECTIONS_TURN_RIGHT[robot.direction] 
 
 
     def get_start_position(robot: client_robot):
         print(f"GETTING STARTING POSITION...")                  #~ debug print
         # first we need to get the coordinates of the robot
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
-        get_coords_from_message(robot)
+        get_coords_from_message(robot, 1)
 
         # if the robot has spawned already in the final position we dont't need to continue
         if robot.position == (0, 0):
@@ -327,23 +321,31 @@ def main():
 
 
     #? get the new robot coordinates and direction from the message, set the robot's position and and old_position
-    def get_coords_from_message(robot: client_robot):
+    def get_coords_from_message(robot: client_robot, turn: int = 0):
         robot.old_position = robot.position
 
         coords = get_message(robot)
         validate_client_message(coords, "CLIENT_OK")
 
-        coords = coords[:-2].decode(FORMAT).strip()
+        coords = coords[:-2].decode(FORMAT)
+
+        #TODO - simplify
+        if ( len(coords.split()) != 3 ) or ( len(coords) != len(coords.rstrip()) ):
+            raise SERVER_SYNTAX_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
+
         # Split the message into x and y coordinates
         x, y = coords.split()[1:]
+        
+        if "." in x or "." in y:
+            raise SERVER_SYNTAX_ERROR(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
+
         # Convert the coordinates to integers and update the robot's position
         robot.position = (int(x), int(y))
-        get_robot_direction(robot)
+        get_robot_direction(robot)                              #~ PRESUNOUT JENOM DO get_start_position ???
         print(f"NEW POSITION: {robot.position}")                #~ debug print
         print(f"NEW DIRECTION: {robot.direction}")              #~ debug print
 
-        #! TODO - vyresit ze kdyz s robotem hejnu uplne poprve a spawnul se na souradnicich 0, 0 tak ho zbytecne 
-        if robot.old_position != (0, 0) and (robot.position == robot.old_position):
+        if (robot.position == robot.old_position) and (turn == 0):
             #? robot hit an obstacle
             robot_dodge(robot)
 
@@ -359,43 +361,37 @@ def main():
         elif dy > 0:
             robot.direction = "UP"
         elif dy < 0:
-            robot.direction = "DOWN"
-        else:
-            robot.direction = "NONE"            
+            robot.direction = "DOWN"         
+        # else:
+        #     robot.direction = robot_turn(robot)
 
 
     def robot_dodge(robot: client_robot):
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot, 1)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_LEFT"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot, 1)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot)
+        if robot.position[0] == 0 or robot.position[1] == 0:
+            return None
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_LEFT"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot, 1)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_MOVE"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot)
         #
         robot.conn.send(SERVER_MESSAGES["SERVER_TURN_RIGHT"])
-        msg = get_message(robot)
-        validate_client_message(msg, "CLIENT_OK")
+        get_coords_from_message(robot, 1)
 
 
     #|=================================================================================================================================================================
@@ -434,9 +430,13 @@ def main():
                     finally:
                         if not robot.authenticated:
                             close_client(robot.conn)
-
-                print(f"[{addr}] AUTHENTICATION IS OKEY!")      #~ debug print
-                navigate_robot(robot)
+                try:
+                    print(f"[{addr}] AUTHENTICATION IS OKEY!")      #~ debug print
+                    navigate_robot(robot)
+                except SERVER_SYNTAX_ERROR as err:              #? clients key ID or confirmation key is not a num
+                    print(err)
+                    conn.send(SERVER_MESSAGES["SERVER_SYNTAX_ERROR"])
+                    close_client(robot.conn)
 
                 #? if the navigation was successful, send SERVER_LOGOUT to the client
                 conn.send(SERVER_MESSAGES["SERVER_LOGOUT"])
