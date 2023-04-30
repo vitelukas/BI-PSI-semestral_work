@@ -123,7 +123,6 @@ def main():
     #! Functions
         #*==========================================---- ↓ GENERAL FUNCTIONS ↓ ----=============================================================
 
-    # TODO - OPTIMIZE - add timeout                     <<<=======================
     def get_message(robot: client_robot, TIMEOUT: int = TIMEOUT):
         data = b''
         # We are receiving data from the client until we receive a message
@@ -149,13 +148,8 @@ def main():
                 robot.conn.settimeout(None)
             except socket.timeout:
                 close_client(robot.conn)
-                print(f"[CONNECTION TIMEOUT] closing connection...")                    #~ debug print
+                print(f"[CONNECTION TIMEOUT] closing connection...")        #~ debug print
 
-            # if not data:                                                                #~ ? DELETE ?
-            #     # If there is no data in the buffer, we return None because the connection has been closed
-            #     print(f"[Connection closed]...")                                        #~ debug print
-            #     close_client(robot.conn)
-            #     return None
             robot.buffer += data
 
 
@@ -172,7 +166,7 @@ def main():
         # if the clients username is valid, send him a key request
         robot.conn.send(SERVER_MESSAGES["SERVER_KEY_REQUEST"])
 
-        client_KEY_ID = get_message(robot)                                  #! ??? WHAT IF THERE IS A DIFFERENT MESSAGE IN THE BUFFER THAN client_KEY_ID ???                                               
+        client_KEY_ID = get_message(robot)                                             
 
         check_key_ID(client_KEY_ID)
 
@@ -182,8 +176,7 @@ def main():
         #? send SERVER_CONFIRMATION (= server_confirmation_key ) to the client
         robot.conn.send( str(server_confirmation_key).encode(FORMAT) + SUFFIX)
 
-        client_confirmation_key = get_message(robot)                        #! WHAT IF THERE ARE ALREADY MORE MESSAGES IN THE BUFFER                                                 
-                                                                            #! AND I GET A MESSAGE THAT IS NOT THE client_confirmation_key FROM THE BUFFER ???
+        client_confirmation_key = get_message(robot)
         try:
             check_client_confirmation_key(client_confirmation_key, client_key, hash_value)
             #? if the client_confirmation_key is correct, send SERVER_OK to the client
@@ -196,7 +189,7 @@ def main():
             return False
 
         return True     #? return true if the whole authentication runs correctly
-        
+            
     
     def check_suffix(message: bytes):
         if message[-2:] != SUFFIX:
@@ -414,7 +407,6 @@ def main():
 
          #*==========================================---- ↓ ROBOT  RECHARGING ↓ ----=============================================================
 
-    # TODO - IMPLEMENT RECHARGING                                               #! CONTINUE HERE <================
     def robot_recharging(robot: client_robot):
         robot.conn.settimeout(TIMEOUT_RECHARGING)
         robot.recharging = True
